@@ -1,0 +1,859 @@
+-- Amen Anti VC — mic finder + auto speed 100
+-- Delta-first, rebranded, walkspeed auto-set
+
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local CoreGui = game:GetService("CoreGui")
+local StarterGui = game:GetService("StarterGui")
+local RunService = game:GetService("RunService")
+local HttpService = game:GetService("HttpService")
+
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+
+if _G.AMEN_AVCB_LOADED then
+    pcall(function()
+        StarterGui:SetCore("SendNotification", {
+            Title = "Amen Anti VC", Text = "already running", Duration = 4,
+        })
+    end)
+    return
+end
+_G.AMEN_AVCB_LOADED = true
+
+local function executorName()
+    local n = ""
+    pcall(function() if identifyexecutor then n = select(1, identifyexecutor()) or "" end end)
+    if n == "" then pcall(function() if getexecutorname then n = getexecutorname() or "" end end) end
+    return string.lower(tostring(n))
+end
+
+local function isLowUNC()
+    local n = executorName()
+    if n:find("xeno") or n:find("solara") then return true end
+    local score = 0
+    pcall(function() if type(getconnections) == "function" then score += 2 end end)
+    pcall(function() if type(hookmetamethod) == "function" then score += 1 end end)
+    pcall(function()
+        if (syn and type(syn.request) == "function") or type(http_request) == "function"
+            or (fluxus and type(fluxus.request) == "function") or (delta and type(delta.request) == "function")
+        then score += 1 end
+    end)
+    return score <= 1
+end
+
+if isLowUNC() then
+    pcall(function()
+        StarterGui:SetCore("SendNotification", {
+            Title = "Amen Anti VC", Text = "unc too low", Duration = 8,
+        })
+    end)
+    return
+end
+
+pcall(function()
+    for _, parent in ipairs({ PlayerGui, CoreGui }) do
+        for _, g in ipairs(parent:GetChildren()) do
+            if tostring(g.Name or ""):sub(1, 6) == "Amen_" then g:Destroy() end
+        end
+    end
+    if gethui then
+        local h = gethui()
+        if h then
+            for _, g in ipairs(h:GetChildren()) do
+                if tostring(g.Name or ""):sub(1, 6) == "Amen_" then g:Destroy() end
+            end
+        end
+    end
+end)
+
+local VoiceChatService, VoiceChatInternal
+pcall(function() VoiceChatService = game:GetService("VoiceChatService") end)
+pcall(function() VoiceChatInternal = game:GetService("VoiceChatInternal") end)
+local getConnFn
+pcall(function() if getconnections then getConnFn = getconnections end end)
+
+local Theme = {
+    Bg = Color3.fromRGB(14, 14, 18),
+    Panel = Color3.fromRGB(22, 22, 28),
+    Card = Color3.fromRGB(30, 30, 38),
+    Text = Color3.fromRGB(245, 245, 250),
+    Dim = Color3.fromRGB(150, 150, 165),
+    Accent = Color3.fromRGB(220, 40, 60),
+    Good = Color3.fromRGB(80, 220, 130),
+    Warn = Color3.fromRGB(255, 180, 50),
+    Bad = Color3.fromRGB(220, 70, 70),
+    Border = Color3.fromRGB(40, 40, 52),
+}
+local GreenTheme = {
+    Bg = Color3.fromRGB(8, 14, 10),
+    Panel = Color3.fromRGB(12, 22, 16),
+    Card = Color3.fromRGB(16, 30, 22),
+    Text = Color3.fromRGB(230, 255, 240),
+    Dim = Color3.fromRGB(110, 160, 130),
+    Accent = Color3.fromRGB(40, 200, 110),
+    Good = Color3.fromRGB(50, 220, 120),
+    Warn = Color3.fromRGB(255, 180, 50),
+    Bad = Color3.fromRGB(220, 70, 70),
+    Border = Color3.fromRGB(28, 60, 40),
+}
+
+local State = {
+    Active = false,
+    Loading = false,
+    Loaded = false,
+    Closed = false,
+    WaitingForUnmute = false,
+    SpeedEnabled = true,
+    SpeedValue = 100,
+}
+
+local mutedImage = "rbxasset://textures/ui/VoiceChat/MicLight/Muted.png"
+
+local function makeCorner(p, r)
+    local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, r or 10); c.Parent = p; return c
+end
+local function makeStroke(p, col, thick)
+    local s = Instance.new("UIStroke"); s.Color = col or Theme.Border; s.Thickness = thick or 1; s.Parent = p; return s
+end
+local function notify(text, dur)
+    pcall(function()
+        StarterGui:SetCore("SendNotification", {
+            Title = "Amen Anti VC", Text = tostring(text or "AVCB"), Duration = dur or 4,
+        })
+    end)
+end
+
+-- ============ SPEED SYSTEM ============
+local speedConn
+local function applySpeed()
+    if not State.SpeedEnabled then return end
+    local char = LocalPlayer.Character
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum then return end
+    hum.WalkSpeed = State.SpeedValue
+    hum.JumpPower = 50
+end
+
+local function startSpeedLoop()
+    if speedConn then speedConn:Disconnect() end
+    applySpeed()
+    speedConn = RunService.Heartbeat:Connect(function()
+        if not State.SpeedEnabled then return end
+        local char = LocalPlayer.Character
+        if char then
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            if hum and hum.WalkSpeed ~= State.SpeedValue then
+                hum.WalkSpeed = State.SpeedValue
+            end
+        end
+    end)
+    LocalPlayer.CharacterAdded:Connect(function()
+        task.wait(0.5)
+        applySpeed()
+    end)
+end
+
+-- ============ MIC BUTTON FINDER ============
+local function findMicButton()
+    local names = {
+        "toggle_mic_mute", "toggle_mic_mute_new", "mic_mute",
+        "MicrophoneButton", "VoiceChatButton", "UnmuteMic",
+    }
+    local roots = { CoreGui }
+    if gethui then
+        local ok, h = pcall(gethui)
+        if ok and h then table.insert(roots, h) end
+    end
+    table.insert(roots, PlayerGui)
+
+    for _, root in ipairs(roots) do
+        for _, name in ipairs(names) do
+            local found
+            pcall(function() found = root:FindFirstChild(name, true) end)
+            if found then return found end
+        end
+        local match
+        pcall(function()
+            for _, d in ipairs(root:GetDescendants()) do
+                if d:IsA("TextButton") or d:IsA("ImageButton") then
+                    local n = string.lower(d.Name)
+                    if n:find("mic") or n:find("voice") then
+                        match = d; break
+                    end
+                end
+            end
+        end)
+        if match then return match end
+        local hitArea
+        pcall(function()
+            for _, d in ipairs(root:GetDescendants()) do
+                local n = string.lower(d.Name)
+                if n:find("iconhitarea") and (n:find("mic") or n:find("voice")) then
+                    hitArea = d.Parent or d; break
+                end
+            end
+        end)
+        if hitArea then return hitArea end
+    end
+    return nil
+end
+
+local function findUnibarContainer(micBtn)
+    if not micBtn then return nil end
+    return micBtn.Parent
+end
+
+local function iconLabel(btn)
+    if not btn then return nil end
+    local r
+    pcall(function()
+        local frame = btn:FindFirstChild("IntegrationIconFrame", true)
+        if frame then
+            local icon = frame:FindFirstChild("IntegrationIcon", true)
+            if icon then r = icon:FindFirstChild("1") or icon:FindFirstChildWhichIsA("ImageLabel") end
+        end
+    end)
+    if not r then pcall(function() r = btn:FindFirstChildWhichIsA("ImageLabel", true) end) end
+    return r
+end
+
+-- ============ MIC STATE ============
+local micCache, micCacheAt = nil, 0
+local function readMicFromUI()
+    if tick() - micCacheAt < 1.25 and micCache ~= nil then return micCache end
+    local foundMuted, foundUnmuted = false, false
+    pcall(function()
+        local top = CoreGui:FindFirstChild("TopBarApp")
+        local roots = top and { top } or { CoreGui }
+        for _, root in ipairs(roots) do
+            for _, ui in ipairs(root:GetDescendants()) do
+                if ui:IsA("ImageLabel") or ui:IsA("ImageButton") then
+                    local img = string.lower(tostring(ui.Image or ""))
+                    if img:find("voicechat") and img:find("mic") then
+                        if img:find("unmuted") then foundUnmuted = true
+                        elseif img:find("muted") then foundMuted = true
+                        elseif img:find("miclight") or img:find("mic_light") then foundUnmuted = true end
+                    end
+                end
+            end
+        end
+    end)
+    local result
+    if foundUnmuted and not foundMuted then result = false
+    elseif foundMuted and not foundUnmuted then result = true end
+    micCache, micCacheAt = result, tick()
+    return result
+end
+
+local function getMicState()
+    local muted
+    pcall(function()
+        local adi = LocalPlayer:FindFirstChildWhichIsA("AudioDeviceInput", true)
+        if adi then
+            if adi.Muted == true or adi.Active == false then muted = true; return end
+            if adi.Muted == false and adi.Active ~= false then muted = false; return end
+        end
+    end)
+    if type(muted) == "boolean" then return muted, "api" end
+    pcall(function()
+        if VoiceChatInternal and typeof(VoiceChatInternal.IsMuted) == "function" then
+            local m = VoiceChatInternal:IsMuted()
+            if type(m) == "boolean" then muted = m end
+        end
+    end)
+    if type(muted) == "boolean" then return muted, "api" end
+    local fromUi = readMicFromUI()
+    if type(fromUi) == "boolean" then return fromUi, "ui" end
+    return nil, nil
+end
+
+local function setMicState(muted)
+    local adi = LocalPlayer:FindFirstChildWhichIsA("AudioDeviceInput", true)
+    if adi then
+        adi.Active = not muted
+        if adi.Muted ~= nil then adi.Muted = muted end
+    else
+        pcall(function() VoiceChatInternal:PublishPause(muted) end)
+    end
+end
+
+-- ============ CORE BYPASS ============
+local function runBypass()
+    local isMuted = true
+    local hidden = Instance.new("Folder")
+    hidden.Name = "Amen_VC_Hidden"
+    pcall(function() hidden.Parent = game:GetService("RobloxReplicatedStorage") end)
+
+    local micButton = findMicButton()
+    if not micButton then
+        pcall(function() VoiceChatService:joinVoice() end)
+        task.wait(3)
+        micButton = findMicButton()
+    end
+    if not micButton then
+        notify("can't find mic button", 6)
+        return false
+    end
+
+    local container = findUnibarContainer(micButton)
+    task.wait(2)
+
+    local deadline = tick() + 60
+    while tick() < deadline and not State.Closed do
+        local icon = iconLabel(micButton)
+        local imgOk = false
+        pcall(function()
+            if icon and icon.Image ~= mutedImage then imgOk = true end
+        end)
+        if imgOk then break end
+        if getMicState() == false then break end
+        task.wait(0.5)
+    end
+    if State.Closed then return false end
+
+    pcall(function() VoiceChatService:leaveVoice() end)
+    task.wait(2)
+
+    local disabled = 0
+    pcall(function()
+        if not getConnFn or not VoiceChatInternal then return end
+        local conns = getConnFn(VoiceChatInternal.StateChanged)
+        for i = 7, #conns do
+            if conns[i] then pcall(function() conns[i]:Disable(); disabled += 1 end) end
+        end
+    end)
+
+    task.wait(2)
+    pcall(function() VoiceChatService:joinVoice() end)
+    task.wait(2)
+
+    micButton = findMicButton()
+    container = findUnibarContainer(micButton)
+
+    if micButton and container then
+        pcall(function()
+            local cloned = micButton:Clone()
+            micButton.Parent = hidden
+            cloned.Name = "toggle_mic_mute_new"
+            cloned.Parent = container
+            local clonedIcon = iconLabel(cloned)
+            local origIcon = iconLabel(micButton)
+            setMicState(true)
+            local hit = cloned:FindFirstChild("IconHitArea_toggle_mic_mute", true)
+                or cloned:FindFirstChildWhichIsA("TextButton", true)
+                or cloned:FindFirstChildWhichIsA("ImageButton", true)
+                or cloned
+            if hit then
+                hit.Activated:Connect(function()
+                    isMuted = not isMuted
+                    setMicState(isMuted)
+                    if isMuted then
+                        if clonedIcon then clonedIcon.Image = mutedImage end
+                    else
+                        if clonedIcon and origIcon then clonedIcon.Image = origIcon.Image end
+                    end
+                end)
+            end
+        end)
+    end
+
+    local reconnected = false
+    local deadline2 = tick() + 20
+    local conn
+    pcall(function()
+        if VoiceChatInternal and VoiceChatInternal.StateChanged then
+            conn = VoiceChatInternal.StateChanged:Connect(function(_, new)
+                local n = string.lower(tostring(new and (new.Name or new) or ""))
+                if n:find("join") or n:find("connect") or n:find("ingame")
+                    or n:find("active") or n:find("joined") then
+                    reconnected = true
+                end
+            end)
+        end
+    end)
+
+    while tick() < deadline2 and not reconnected and not State.Closed do
+        pcall(function()
+            local st = VoiceChatInternal and VoiceChatInternal.VoiceChatState
+            if st then
+                local n = string.lower(tostring(st.Name or st))
+                if n:find("join") or n:find("connect") or n:find("ingame") or n:find("joined") then
+                    reconnected = true
+                end
+            end
+        end)
+        if not reconnected then
+            pcall(function()
+                local adi = LocalPlayer:FindFirstChildWhichIsA("AudioDeviceInput", true)
+                if adi and adi.Active ~= nil then reconnected = true end
+            end)
+        end
+        task.wait(0.2)
+    end
+    if conn then conn:Disconnect() end
+    if State.Closed then return false end
+    return true
+end
+
+-- ============ UI ============
+local UI = {}
+local setStatus, setButton
+
+local function applyActiveTheme()
+    for k, v in pairs(GreenTheme) do Theme[k] = v end
+    if UI.Card then
+        UI.Card.BackgroundColor3 = GreenTheme.Bg
+        local st = UI.Card:FindFirstChildOfClass("UIStroke")
+        if st then st.Color = GreenTheme.Accent end
+    end
+    if UI.TopLine then UI.TopLine.BackgroundColor3 = GreenTheme.Good end
+    if UI.Header then UI.Header.BackgroundColor3 = GreenTheme.Panel end
+    if UI.HeaderFix then UI.HeaderFix.BackgroundColor3 = GreenTheme.Panel end
+    if UI.Action then
+        UI.Action.Text = "AMEN ON"
+        UI.Action.BackgroundColor3 = GreenTheme.Good
+        UI.Action.TextColor3 = Color3.new(1, 1, 1)
+        UI.Action.Active = false
+    end
+    if UI.Status then
+        UI.Status.Text = "amen on — don't mute"
+        UI.Status.TextColor3 = GreenTheme.Good
+    end
+    if UI.ProtDot then UI.ProtDot.BackgroundColor3 = GreenTheme.Good end
+    if UI.ProtLabel then
+        UI.ProtLabel.Text = "✓ protected — Amen active"
+        UI.ProtLabel.TextColor3 = GreenTheme.Good
+    end
+    if UI.CloseBtn then
+        UI.CloseBtn.BackgroundColor3 = GreenTheme.Bad
+        UI.CloseBtn.TextColor3 = GreenTheme.Text
+        UI.CloseBtn.Active = true
+    end
+end
+
+local function buildUI()
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "Amen_AntiVC"
+    gui.ResetOnSpawn = false
+    gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    gui.DisplayOrder = 999999
+    gui.IgnoreGuiInset = true
+    pcall(function() if syn and syn.protect_gui then syn.protect_gui(gui) end end)
+    pcall(function() gui.Parent = CoreGui end)
+    if not gui.Parent then pcall(function() gui.Parent = gethui() end) end
+    if not gui.Parent then gui.Parent = PlayerGui end
+    UI.Gui = gui
+
+    task.spawn(function()
+        while not State.Closed and gui do
+            task.wait(1)
+            if not gui.Parent then
+                pcall(function() gui.Parent = CoreGui end)
+                if not gui.Parent then pcall(function() gui.Parent = gethui() end) end
+                if not gui.Parent then gui.Parent = PlayerGui end
+            end
+        end
+    end)
+
+    local dim = Instance.new("Frame")
+    dim.Size = UDim2.fromScale(1, 1)
+    dim.BackgroundColor3 = Color3.new(0, 0, 0)
+    dim.BackgroundTransparency = 0.45
+    dim.BorderSizePixel = 0
+    dim.Parent = gui
+    UI.Dim = dim
+
+    local card = Instance.new("Frame")
+    card.Size = UDim2.new(0, 380, 0, 430)
+    card.Position = UDim2.new(0.5, -190, 0.5, -215)
+    card.BackgroundColor3 = Theme.Bg
+    card.BorderSizePixel = 0
+    card.Parent = gui
+    makeCorner(card, 14)
+    makeStroke(card, Theme.Accent, 1.5)
+    UI.Card = card
+
+    local topLine = Instance.new("Frame")
+    topLine.Size = UDim2.new(1, 0, 0, 2)
+    topLine.BackgroundColor3 = Theme.Accent
+    topLine.BorderSizePixel = 0
+    topLine.Parent = card
+    UI.TopLine = topLine
+
+    local header = Instance.new("Frame")
+    header.Size = UDim2.new(1, 0, 0, 52)
+    header.BackgroundColor3 = Theme.Panel
+    header.BorderSizePixel = 0
+    header.Parent = card
+    makeCorner(header, 14)
+    UI.Header = header
+
+    local hFix = Instance.new("Frame")
+    hFix.Size = UDim2.new(1, 0, 0, 14)
+    hFix.Position = UDim2.new(0, 0, 1, -14)
+    hFix.BackgroundColor3 = Theme.Panel
+    hFix.BorderSizePixel = 0
+    hFix.Parent = header
+    UI.HeaderFix = hFix
+
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, -56, 1, 0)
+    title.Position = UDim2.new(0, 18, 0, 0)
+    title.BackgroundTransparency = 1
+    title.Text = "AMEN ANTI VC"
+    title.TextColor3 = Theme.Text
+    title.Font = Enum.Font.GothamBold
+    title.TextSize = 15
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.Parent = header
+
+    local closeBtn = Instance.new("TextButton")
+    closeBtn.Size = UDim2.new(0, 30, 0, 30)
+    closeBtn.Position = UDim2.new(1, -40, 0.5, -15)
+    closeBtn.BackgroundColor3 = Theme.Card
+    closeBtn.Text = "×"
+    closeBtn.TextColor3 = Theme.Dim
+    closeBtn.Font = Enum.Font.GothamBold
+    closeBtn.TextSize = 18
+    closeBtn.AutoButtonColor = false
+    closeBtn.Parent = header
+    makeCorner(closeBtn, 8)
+    UI.CloseBtn = closeBtn
+
+    local body = Instance.new("Frame")
+    body.Size = UDim2.new(1, -36, 1, -160)
+    body.Position = UDim2.new(0, 18, 0, 60)
+    body.BackgroundTransparency = 1
+    body.Parent = card
+
+    -- mic card
+    local micCard = Instance.new("Frame")
+    micCard.Size = UDim2.new(1, 0, 0, 50)
+    micCard.BackgroundColor3 = Theme.Panel
+    micCard.BorderSizePixel = 0
+    micCard.Parent = body
+    makeCorner(micCard, 10)
+    makeStroke(micCard, Theme.Border, 1)
+
+    local micDot = Instance.new("Frame")
+    micDot.Size = UDim2.new(0, 10, 0, 10)
+    micDot.Position = UDim2.new(0, 16, 0.5, -5)
+    micDot.BackgroundColor3 = Theme.Warn
+    micDot.BorderSizePixel = 0
+    micDot.Parent = micCard
+    makeCorner(micDot, 5)
+    UI.MicDot = micDot
+
+    local micLabel = Instance.new("TextLabel")
+    micLabel.Size = UDim2.new(1, -40, 1, 0)
+    micLabel.Position = UDim2.new(0, 34, 0, 0)
+    micLabel.BackgroundTransparency = 1
+    micLabel.Text = "checking mic…"
+    micLabel.TextColor3 = Theme.Text
+    micLabel.Font = Enum.Font.GothamMedium
+    micLabel.TextSize = 13
+    micLabel.TextXAlignment = Enum.TextXAlignment.Left
+    micLabel.Parent = micCard
+    UI.MicLabel = micLabel
+
+    -- protection card
+    local protCard = Instance.new("Frame")
+    protCard.Size = UDim2.new(1, 0, 0, 50)
+    protCard.Position = UDim2.new(0, 0, 0, 58)
+    protCard.BackgroundColor3 = Theme.Panel
+    protCard.BorderSizePixel = 0
+    protCard.Parent = body
+    makeCorner(protCard, 10)
+    makeStroke(protCard, Theme.Border, 1)
+
+    local protDot = Instance.new("Frame")
+    protDot.Size = UDim2.new(0, 10, 0, 10)
+    protDot.Position = UDim2.new(0, 16, 0.5, -5)
+    protDot.BackgroundColor3 = Theme.Dim
+    protDot.BorderSizePixel = 0
+    protDot.Parent = protCard
+    makeCorner(protDot, 5)
+    UI.ProtDot = protDot
+
+    local protLabel = Instance.new("TextLabel")
+    protLabel.Size = UDim2.new(1, -40, 1, 0)
+    protLabel.Position = UDim2.new(0, 34, 0, 0)
+    protLabel.BackgroundTransparency = 1
+    protLabel.Text = "not running"
+    protLabel.TextColor3 = Theme.Dim
+    protLabel.Font = Enum.Font.GothamMedium
+    protLabel.TextSize = 12
+    protLabel.TextXAlignment = Enum.TextXAlignment.Left
+    protLabel.Parent = protCard
+    UI.ProtLabel = protLabel
+
+    -- speed toggle row
+    local speedCard = Instance.new("Frame")
+    speedCard.Size = UDim2.new(1, 0, 0, 50)
+    speedCard.Position = UDim2.new(0, 0, 0, 116)
+    speedCard.BackgroundColor3 = Theme.Panel
+    speedCard.BorderSizePixel = 0
+    speedCard.Parent = body
+    makeCorner(speedCard, 10)
+    makeStroke(speedCard, Theme.Border, 1)
+
+    local speedDot = Instance.new("Frame")
+    speedDot.Size = UDim2.new(0, 10, 0, 10)
+    speedDot.Position = UDim2.new(0, 16, 0.5, -5)
+    speedDot.BackgroundColor3 = Theme.Good
+    speedDot.BorderSizePixel = 0
+    speedDot.Parent = speedCard
+    makeCorner(speedDot, 5)
+    UI.SpeedDot = speedDot
+
+    local speedLabel = Instance.new("TextLabel")
+    speedLabel.Size = UDim2.new(1, -100, 1, 0)
+    speedLabel.Position = UDim2.new(0, 34, 0, 0)
+    speedLabel.BackgroundTransparency = 1
+    speedLabel.Text = "Speed: 100 (auto)"
+    speedLabel.TextColor3 = Theme.Text
+    speedLabel.Font = Enum.Font.GothamMedium
+    speedLabel.TextSize = 13
+    speedLabel.TextXAlignment = Enum.TextXAlignment.Left
+    speedLabel.Parent = speedCard
+    UI.SpeedLabel = speedLabel
+
+    local speedBtn = Instance.new("TextButton")
+    speedBtn.Size = UDim2.new(0, 56, 0, 26)
+    speedBtn.Position = UDim2.new(1, -68, 0.5, -13)
+    speedBtn.BackgroundColor3 = Theme.Good
+    speedBtn.Text = "ON"
+    speedBtn.TextColor3 = Color3.fromRGB(20, 20, 26)
+    speedBtn.Font = Enum.Font.GothamBold
+    speedBtn.TextSize = 11
+    speedBtn.AutoButtonColor = false
+    speedBtn.Parent = speedCard
+    makeCorner(speedBtn, 6)
+
+    local function refreshSpeedUI()
+        if State.SpeedEnabled then
+            speedBtn.Text = "ON"
+            speedBtn.BackgroundColor3 = Theme.Good
+            speedDot.BackgroundColor3 = Theme.Good
+            speedLabel.Text = "Speed: " .. tostring(State.SpeedValue) .. " (auto)"
+        else
+            speedBtn.Text = "OFF"
+            speedBtn.BackgroundColor3 = Theme.Card
+            speedDot.BackgroundColor3 = Theme.Dim
+            speedLabel.Text = "Speed: off"
+        end
+    end
+    refreshSpeedUI()
+
+    speedBtn.MouseButton1Click:Connect(function()
+        State.SpeedEnabled = not State.SpeedEnabled
+        if State.SpeedEnabled then
+            applySpeed()
+            startSpeedLoop()
+            notify("speed on (" .. tostring(State.SpeedValue) .. ")", 3)
+        else
+            local char = LocalPlayer.Character
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            if hum then hum.WalkSpeed = 16 end
+            notify("speed off", 3)
+        end
+        refreshSpeedUI()
+    end)
+    UI.SpeedBtn = speedBtn
+    UI.SpeedLabel = speedLabel
+
+    local status = Instance.new("TextLabel")
+    status.Size = UDim2.new(1, 0, 0, 36)
+    status.Position = UDim2.new(0, 0, 0, 176)
+    status.BackgroundTransparency = 1
+    status.Text = "unmute yourself, then hit the button"
+    status.TextColor3 = Theme.Dim
+    status.Font = Enum.Font.Gotham
+    status.TextSize = 12
+    status.TextWrapped = true
+    status.TextXAlignment = Enum.TextXAlignment.Left
+    status.TextYAlignment = Enum.TextYAlignment.Top
+    status.Parent = body
+    UI.Status = status
+
+    local action = Instance.new("TextButton")
+    action.Size = UDim2.new(1, 0, 0, 44)
+    action.Position = UDim2.new(0, 0, 1, -50)
+    action.BackgroundColor3 = Theme.Accent
+    action.Text = "AMEN ANTI VC"
+    action.TextColor3 = Color3.new(1, 1, 1)
+    action.Font = Enum.Font.GothamBold
+    action.TextSize = 15
+    action.AutoButtonColor = false
+    action.Parent = body
+    makeCorner(action, 10)
+    UI.Action = action
+
+    local footer = Instance.new("TextLabel")
+    footer.Size = UDim2.new(1, -24, 0, 36)
+    footer.Position = UDim2.new(0, 12, 1, -42)
+    footer.BackgroundTransparency = 1
+    footer.Text = "Amen's build\ndon't mute while this is on"
+    footer.TextColor3 = Theme.Dim
+    footer.Font = Enum.Font.Gotham
+    footer.TextSize = 10
+    footer.TextWrapped = true
+    footer.TextXAlignment = Enum.TextXAlignment.Center
+    footer.TextYAlignment = Enum.TextYAlignment.Top
+    footer.Parent = card
+
+    do
+        local dragging, start, startPos
+        header.InputBegan:Connect(function(inp)
+            if inp.UserInputType == Enum.UserInputType.MouseButton1
+                or inp.UserInputType == Enum.UserInputType.Touch then
+                dragging = true
+                start = inp.Position
+                startPos = card.Position
+            end
+        end)
+        UserInputService.InputEnded:Connect(function(inp)
+            if inp.UserInputType == Enum.UserInputType.MouseButton1
+                or inp.UserInputType == Enum.UserInputType.Touch then
+                dragging = false
+            end
+        end)
+        UserInputService.InputChanged:Connect(function(inp)
+            if not dragging then return end
+            if inp.UserInputType == Enum.UserInputType.MouseMovement
+                or inp.UserInputType == Enum.UserInputType.Touch then
+                local d = inp.Position - start
+                card.Position = UDim2.new(
+                    startPos.X.Scale, startPos.X.Offset + d.X,
+                    startPos.Y.Scale, startPos.Y.Offset + d.Y
+                )
+            end
+        end)
+    end
+
+    closeBtn.MouseButton1Click:Connect(function()
+        if not State.Loaded and not State.Active then
+            setStatus("wait til it finishes", Theme.Warn)
+            return
+        end
+        TweenService:Create(card, TweenInfo.new(0.2), { BackgroundTransparency = 1 }):Play()
+        TweenService:Create(dim, TweenInfo.new(0.25), { BackgroundTransparency = 1 }):Play()
+        task.delay(0.3, function() pcall(function() gui:Destroy() end) end)
+        notify("ui closed, script still running", 3)
+    end)
+
+    setStatus = function(msg, col)
+        if UI.Status then UI.Status.Text = msg; UI.Status.TextColor3 = col or Theme.Dim end
+    end
+
+    setButton = function(txt, enabled)
+        if not UI.Action then return end
+        UI.Action.Text = txt
+        UI.Action.Active = enabled ~= false
+        if State.Active then
+            UI.Action.BackgroundColor3 = Theme.Good
+            UI.Action.TextColor3 = Color3.new(1, 1, 1)
+        elseif State.Loaded or State.Loading then
+            UI.Action.BackgroundColor3 = Theme.Card
+            UI.Action.TextColor3 = Theme.Dim
+        else
+            UI.Action.BackgroundColor3 = Theme.Accent
+            UI.Action.TextColor3 = Color3.new(1, 1, 1)
+        end
+    end
+
+    local function refreshMicBadge()
+        local muted = getMicState()
+        if muted == true then
+            UI.MicDot.BackgroundColor3 = Theme.Bad
+            UI.MicLabel.Text = "mic muted — unmute first"
+            UI.MicLabel.TextColor3 = Theme.Bad
+        elseif muted == false then
+            UI.MicDot.BackgroundColor3 = Theme.Good
+            UI.MicLabel.Text = "mic unmuted"
+            UI.MicLabel.TextColor3 = Theme.Good
+        else
+            UI.MicDot.BackgroundColor3 = Theme.Warn
+            UI.MicLabel.Text = "mic not detected"
+            UI.MicLabel.TextColor3 = Theme.Warn
+        end
+        return muted
+    end
+
+    local function startBypass()
+        if State.Loaded or State.Active or State.Loading then return end
+        local muted = getMicState()
+        refreshMicBadge()
+        if muted == true then
+            State.WaitingForUnmute = true
+            setStatus("unmute first", Theme.Bad)
+            setButton("unmute first", false)
+            return
+        end
+        State.Loading = true
+        State.WaitingForUnmute = false
+        setStatus("starting…", Theme.Warn)
+        setButton("working…", false)
+        if UI.ProtDot then UI.ProtDot.BackgroundColor3 = Theme.Warn end
+        if UI.ProtLabel then
+            UI.ProtLabel.Text = "starting…"
+            UI.ProtLabel.TextColor3 = Theme.Warn
+        end
+
+        task.spawn(function()
+            local ok, err = pcall(runBypass)
+            State.Loading = false
+            if not ok then
+                setStatus("failed: " .. tostring(err):sub(1, 60), Theme.Bad)
+                setButton("Try again", true)
+                State.Loaded = false
+                State.Active = false
+                if UI.ProtDot then UI.ProtDot.BackgroundColor3 = Theme.Bad end
+                if UI.ProtLabel then
+                    UI.ProtLabel.Text = "failed"
+                    UI.ProtLabel.TextColor3 = Theme.Bad
+                end
+                return
+            end
+            if State.Closed then return end
+            State.Loaded = true
+            State.Active = true
+            applyActiveTheme()
+            notify("amen on — don't mute", 4)
+        end)
+    end
+
+    action.MouseButton1Click:Connect(startBypass)
+
+    task.spawn(function()
+        while gui.Parent and not State.Closed do
+            if State.Active or State.Loaded then
+                task.wait(2)
+            elseif not State.Loading then
+                local m = getMicState()
+                refreshMicBadge()
+                if State.WaitingForUnmute and m == false then
+                    State.WaitingForUnmute = false                    setStatus("unmuted — starting…", Theme.Good)
+                    task.wait(3)
+                    startBypass()
+                end
+                task.wait(0.75)
+            else
+                task.wait(0.5)
+            end
+        end
+    end)
+
+    refreshMicBadge()
+end
+
+-- ============ AUTO START SPEED ============
+startSpeedLoop()
+
+-- ============ BOOT ============
+buildUI()
+
+notify("Amen Anti VC loaded — speed 100 on", 4)
